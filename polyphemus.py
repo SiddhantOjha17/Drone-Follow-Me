@@ -15,7 +15,9 @@ vision_algorithm = RedBlobDetector()
 def move_camera(vehicle, pwm):
     if vehicle:
         pwm = max(pwm, 1) # Ensure we never ask for negative or zero pwm values
+        print(pwm)
         msg = vehicle.message_factory.rc_channels_override_encode(1, 1, 0, 0, 0, 0, 0, pwm, 0, 0)
+        print(msg)
         vehicle.send_mavlink(msg)
         vehicle.flush()
 
@@ -61,9 +63,9 @@ def process_frame(logger, frame, vehicle):
         logger.log(frame,vehicle)
         
     target = vision_algorithm.detect_target(frame)
+    #print(type(target))
     
     camera_pid(target, vehicle)
-    print("in process_frame")
    
     render_crosshairs(frame, target)    
     if showGUI:
@@ -74,7 +76,9 @@ def camera_pid(target, vehicle):
         _, cy = target
             
         control = controller.compute(cy, 240)
+        print(type(control))
         pwm = control+1500
+        pwm = int(pwm)
         move_camera(vehicle, pwm)
 
         print_graph(cy,pwm) 
