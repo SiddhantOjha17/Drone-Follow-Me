@@ -3,15 +3,37 @@ import time
 import os.path
 import math
 import os
+import sys
 from dronekit import connect, VehicleMode
 from file_utils import Logger
-from polyphemus import process_stream
+from gui import render_crosshairs
+from pid import Pid, print_graph
+from red_blob_detection import RedBlobDetector
 
+
+def landing(vehicle):
+	print("Setting LAND mode...")
+	vehicle.mode = VehicleMode("LAND")
+	time.sleep(1)
+	
 def get_vehicle():
     v = connect('/dev/ttyACM0', wait_ready=True)
     print("connected to vehicle")
     return v
-    
+
+print ("DroneScript - Visual-Follow Running")
+vehicle = get_vehicle()
+print("Connected to Vehicle!!")
+mustarm = True
+vehicle.armed= True
+
+# Set to false if you don't want to show any windows
+showGUI = True
+
+controller = Pid(kp=0.2, ki=0.05, kd=0.2)
+
+vision_algorithm = RedBlobDetector()
+
 
 def arm_and_takeoff_nogps(aTargetAltitude):
     """
@@ -21,14 +43,6 @@ def arm_and_takeoff_nogps(aTargetAltitude):
     ##### CONSTANTS #####
     DEFAULT_TAKEOFF_THRUST = 0.7
     SMOOTH_TAKEOFF_THRUST = 0.6
-
-    print("Basic pre-arm checks")
-    # Don't let the user try to arm until autopilot is ready
-    # If you need to disable the arming check,
-    # just comment it with your own responsibility.
-    # while not vehicle.is_armable:
-    #     print(" Waiting for vehicle to initialise...")
-    #     time.sleep(1)
 
 
     print("Arming motors")
@@ -127,29 +141,86 @@ def to_quaternion(roll = 0.0, pitch = 0.0, yaw = 0.0):
 
     return [w, x, y, z]
 
-def landing(vehicle):
-	print("Setting LAND mode...")
-	vehicle.mode = VehicleMode("LAND")
-	time.sleep(1)
-	
+def move_camera(vehicle, pwm):
+    if vehicle:
+        pwm = max(pwm, 1) # Ensure we never ask for negative or zero pwm values
+        print(pwm)
+        msg = vehicle.message_factory.rc_channels_override_encode(1, 1, 0, 0, 0, 0, 0, pwm, 0, 0)
+        print(msg)
+        vehicle.send_mavlink(msg)
+        vehicle.flush()
 
+def disable_camera(vehicle):
+    if vehicle:
+        msg = vehicle.message_factory.rc_channels_override_encode(1, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+        vehicle.send_mavlink(msg)
+        vehicle.flush()
 
+def process_stream(video_in, logger, vehicle=None, require_arming=False, *,start):
+    
+    while True:
+        frame = get_frame(video_in)
 
-print ("DroneScript - Visual-Follow Running")
-vehicle = get_vehicle()
-print("Connected to Vehicle!!")
-mustarm = True
-vehicle.armed= True
+        arm_and_takeoff_nogps(1.2)
+        
+        set_attitude(duration=1)
+        
+        # process_frame(logger, frame, vehicle)
+                
+        ch = 0xFF & cv2.waitKey(5)
+        if ch == 27:
+            break        
+        
+        end = time.perf_counter()
+        if end - start > 11:
+                        print("done lol")
+                        landing(vehicle)   
+                        break       
+    disable_camera(vehicle)
+
+    print ("Done with stream")
+    if logger:
+        logger.close()
+    cv2.destroyAllWindows()
+    video_in.release()
+
+def get_frame(videoInput):
+	gotNewFrame, frame = videoInput.read()
+	if not gotNewFrame:
+		print ("Reached EOF or webcam disconnected")
+		sys.exit(0) 
+	return frame
+
+def process_frame(logger, frame, vehicle):
+    if logger:
+        logger.log(frame,vehicle)
+        
+    target = vision_algorithm.detect_target(frame)
+    
+    camera_pid(target, vehicle)
+   
+    render_crosshairs(frame, target)    
+    if showGUI:
+        cv2.imshow("frame", frame)
+
+def camera_pid(target, vehicle):
+    if target != None:
+        _, cy = target
+            
+        control = controller.compute(cy, 240)
+        print(type(control))
+        pwm = control+1500
+        pwm = int(pwm)
+        move_camera(vehicle, pwm)
+
+        print_graph(cy,pwm )
+
 
 while True:
     video_in = cv2.VideoCapture(0)
     homedir = os.path.expanduser("~")
     logger = Logger(path= homedir + "/Videos/")
     
-    arm_and_takeoff_nogps(1.5)
-    set_attitude(duration = 3)
-    time.sleep(5)
+    start = time.perf_counter()
+    process_stream(video_in, logger, vehicle=vehicle, require_arming=mustarm, start= start)
     
-    process_stream(video_in, logger, vehicle=vehicle, require_arming=mustarm)
-    landing(vehicle)
-
